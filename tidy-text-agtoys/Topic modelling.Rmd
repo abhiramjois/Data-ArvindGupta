@@ -1,0 +1,350 @@
+---
+title: "Topic Gn"
+author: "Abhiram Jois"
+date: "2025-02-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(jsonlite)
+library(tidytext)
+library(tibble)
+library(dplyr)
+```
+
+# Read Json file with all the data
+```{r}
+json_data <- fromJSON("data/allvideos_cleaned.json")
+names(json_data)
+```
+
+# Tibble for title and desc
+```{r}
+agt_title <- tibble(title = json_data$Title)
+agt_desc <- tibble(
+  id = 1:length(json_data$Description),  # Serial numbers
+  desc = json_data$Description                      # Descriptions
+)
+agt_title
+agt_desc
+```
+# Removing stop words for Descriptions
+```{r}
+agt_desc <- agt_desc %>% 
+  unnest_tokens(word, desc) %>% 
+  anti_join(stop_words)
+
+agt_desc
+```
+# Removing stop words for Title
+```{r}
+agt_title <- agt_title %>% 
+  unnest_tokens(word, title) %>% 
+  anti_join(stop_words)
+
+agt_title
+```
+
+
+# Sorting words
+```{r}
+agt_desc %>%
+  count(word, sort = TRUE)
+```
+
+# Custom stop words
+```{r}
+my_stopwords <- tibble(word = c(as.character(1:10), "toys", "http", "www.arvindguptatoys.com", "toy", "ashok", "dubbed", "kannada", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", 
+  "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "1000", "200", "13", "180", "245", "300",
+  "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", 
+  "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", 
+  "41", "42", "43", "44", "45", "46", "47", "48", "49", "50", 
+  "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", 
+  "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", 
+  "71", "72", "73", "74", "75", "76", "77", "78", "79", "80", 
+  "81", "82", "83", "84", "85", "86", "87", "88", "89", "90", 
+  "91", "92", "93", "94", "95", "96", "97", "98", "99", "100", "cm", "arvind", "gupta", "credits", "mane", "hiremath", "jyoti", "shivaji", "jain", "manish", "pradnya", "pujari", "vidula", "mhaiskar", "arvindguptatoys.com", "nanawaty", "nanavati", "pk","it's"))
+
+agt_desc <- agt_desc %>% anti_join(my_stopwords)
+```
+# Identifying pairs
+
+```{r}
+library(widyr)
+title_word_pairs <- agt_desc %>% 
+  pairwise_count(word, id, sort = TRUE)
+
+title_word_pairs
+```
+
+# Graph of word pairs
+```{r}
+library(ggplot2)
+library(igraph)
+library(ggraph)
+
+set.seed(1234)
+title_word_pairs %>%
+  filter(n >= 30) %>%
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n, edge_width = n), edge_colour = "cyan4") +
+  geom_node_point(size = 1) +
+  geom_node_text(aes(label = name), repel = TRUE, 
+                 point.padding = unit(0.2, "lines")) +
+  theme_void()
+```
+
+# TF-IDF assign
+```{r}
+desc_tf_idf <- agt_desc %>% 
+  count(id, word, sort = TRUE) %>%
+  bind_tf_idf(word, id, n)
+
+desc_tf_idf %>% 
+  arrange(-tf_idf)
+```
+
+# Generating word counts
+```{r}
+word_counts <- agt_desc %>%
+  count(id, word, sort = TRUE) %>%
+  ungroup()
+
+word_counts
+```
+
+# Document Matrix
+```{r}
+library(tm)
+desc_dtm <- word_counts %>% cast_dtm(id, word, n)
+desc_dtm
+```
+
+# Topic modeling
+```{r}
+library(topicmodels)
+
+# be aware that running this model is time intensive
+desc_lda <- LDA(desc_dtm, k = 10, control = list(seed = 1234))
+desc_lda
+
+#desc_lda_7 <- LDA(desc_dtm, k = 7, control = list(seed = 1234))
+#desc_lda_7
+```
+
+# Visualizing the topics
+```{r}
+library(ggplot2)
+tidy_lda <- tidy(desc_lda)
+
+top_terms <- tidy_lda %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+p <- top_terms %>%
+        mutate(term = reorder_within(term, beta, topic)) %>%
+        group_by(topic, term) %>%    
+        arrange(desc(beta)) %>%  
+        ungroup() %>%
+        ggplot(aes(beta, term, fill = as.factor(topic))) +
+        geom_col(show.legend = FALSE) +
+        scale_y_reordered() +
+        labs(title = "Topics from descriptions of Arvindguptatoys",
+             x = expression(beta), y = NULL) +
+        facet_wrap(~ topic, ncol = 4, scales = "free")
+
+#ggsave("AGT_Topics_12.png", plot = p, width = 10, height = 12, dpi = 300)
+```
+
+# Distribution of topics in descriptions
+```{r}
+lda_gamma <- tidy(desc_lda, matrix = "gamma")
+lda_gamma
+
+ggplot(lda_gamma, aes(gamma)) +
+  geom_histogram(alpha = 0.8) +
+  scale_y_log10() +
+  labs(title = "Distribution of probabilities for all topics",
+       y = "Number of documents", x = expression(gamma))
+
+plot_desc <-  ggplot(lda_gamma, aes(gamma, fill = as.factor(topic))) +
+            geom_histogram(alpha = 0.8, show.legend = FALSE) +
+            facet_wrap(~ topic, ncol = 4) +
+            scale_y_log10() +
+            labs(title = "Distribution of probability for each topic",
+                 y = "Number of documents", x = expression(gamma))
+
+#ggsave("AGT_Distribution_12.png", plot = plot_desc, width = 10, height = 12, dpi = 300)
+```
+
+# Assigning a dominant topic to each description
+```{r}
+desc_topics <- tidy(desc_lda, matrix = "gamma") %>%
+  mutate(id = as.integer(document)) %>%  # Convert document ID to integer
+  group_by(id) %>%
+  filter(gamma == max(gamma, na.rm = TRUE)) %>%  # Select the dominant topic
+  slice(1) %>%  # In case of ties, pick the first one
+  ungroup() %>%
+  rename(topic_probability = gamma)  # Rename for clarity
+
+# Check the number of unique IDs
+# desc_topics %>% count(id)
+
+
+# Get the words contributing to each topic
+words_with_topics <- tidy(desc_lda) %>%
+  rename(word = term) %>%  # Rename 'term' to 'word'
+  inner_join(agt_desc, by = "word")  # Join with words from descriptions
+
+# Link descriptions to topics and contributing words
+desc_with_words <- desc_topics %>%
+  inner_join(words_with_topics, by = c("id", "topic")) %>%
+  select(id, topic, word, beta, topic_probability) %>%
+  arrange(id, desc(beta))  # Sort by description ID and word relevance
+
+# Save the results
+#write.csv(desc_with_words, "description_topics.csv", row.names = FALSE)
+
+# View first few rows
+desc_with_words
+```
+# Visualizing dominant topics
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Get the number of unique IDs
+num_ids <- n_distinct(desc_topics$id)
+
+# Determine grid size (closest square)
+grid_size <- ceiling(sqrt(num_ids))
+
+# Assign X, Y positions for the grid
+desc_topics <- desc_topics %>%
+  mutate(
+    row = (row_number() - 1) %/% grid_size + 1,  # Compute row index
+    col = (row_number() - 1) %% grid_size + 1    # Compute column index
+  )
+
+# Plot the square grid
+ggplot(desc_topics, aes(x = col, y = -row, fill = factor(topic))) +
+  geom_tile(color = "white") +  # Create grid squares
+  scale_fill_viridis_d() +  # Use a color scale for topics
+  theme_minimal() +
+  labs(title = "Descriptions Topics Grid",
+       x = "Column", y = "Row",
+       fill = "Topic") +
+  theme(axis.text = element_blank(), 
+        axis.ticks = element_blank(),
+        panel.grid = element_blank())
+```
+
+# Putting things together
+```{r}
+# Extract descriptions and create an ID column
+descriptions_tibble <- tibble(
+  id = 1:length(json_data$Description),  # Serial numbers
+  desc = json_data$Description                      # Descriptions
+)
+
+# Check if IDs align before merging
+print(head(descriptions_tibble))
+print(head(desc_with_words))
+
+# Merge descriptions with existing topic-word data
+final_table <- desc_with_words %>%
+  group_by(id, topic) %>%
+  summarise(
+    Words = paste(unique(word), collapse = ", "),  # Combine contributing words
+    .groups = "drop"
+  ) %>%
+  left_join(descriptions_tibble, by = "id") %>%  # Merge descriptions
+  rename(
+    ID = id,
+    Description = desc,
+    Topic = topic
+  )
+
+# View final table
+head(final_table)
+
+```
+# Topic and words list
+```{r}
+# Select top 10 **unique** words per topic based on `beta` and `topic_probability`
+topic_word_list <- desc_with_words %>%
+  group_by(topic, word) %>%  
+  summarise(max_beta = max(beta), .groups = "drop") %>%  # Get max beta for each word
+  arrange(topic, desc(max_beta)) %>%  # Sort words by topic and highest beta
+  group_by(topic) %>%
+  slice_head(n = 20) %>%  # Select top 10 words per topic
+  summarise(
+    Words = paste(word, collapse = ", "),  # Combine words into a single string
+    .groups = "drop"
+  )
+
+# View the result
+print(topic_word_list)
+```
+# Exprt topic and word list as csv
+```{r}
+#write.csv(topic_word_list, "topic_word_list_12.csv", row.names = FALSE)
+```
+
+# Import categories
+```{r}
+library(readr)
+categories <- read_csv("data/categories.csv")
+
+# Merge the tables based on 'topic'
+merged_table <- merge(categories, topic_word_list, by = "topic")
+
+# Reorder columns
+merged_table <- merged_table[, c("topic", "category", "Words")]
+
+# Rename columns for consistency (if needed)
+colnames(merged_table) <- c("Topic", "Category", "Words")
+
+# View the result
+merged_table
+```
+
+# Merging categories
+```{r}
+# Merge final_table with merged_table on 'Topic' to get the 'Category' column
+categories_included <- merge(final_table, merged_table[, c("Topic", "Category")], by = "Topic", all.x = TRUE)
+
+# Reorder columns to match desired order
+categories_included <- categories_included[, c("ID", "Topic", "Category", "Description", "Words")]
+
+# View the first few rows
+categories_included <- categories_included[order(categories_included$ID), ]
+
+categories_included
+```
+
+# Full data with categories
+```{r}
+# Merge the two data frames based on Description
+full_dataset <- merge(categories_included, json_data, by = "Description", all.x = TRUE)
+
+# Reorder the columns
+full_dataset <- full_dataset[, c("ID", "Title", "Topic", "Category", "URL", "Description", 
+                                 "Words", "Duration", "YouTube Title", "Video Path")]
+
+# Arrange by ID
+full_dataset <- full_dataset[order(full_dataset$ID), ]
+
+# View the first few rows
+full_dataset
+```
+
+# Write to csv
+```{r}
+write.csv(full_dataset, "full_dataset_10.csv", row.names = FALSE)
+```
+
